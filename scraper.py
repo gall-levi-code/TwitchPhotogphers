@@ -9,8 +9,17 @@ load_dotenv()
 
 CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
+DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL")
 
-def intercept_twitch_graphql():
+tags = ["photography","lightroom","photoshop"]
+LANGUAGE_FLAGS = {
+    "en": "🇺🇸", "de": "🇩🇪", "fr": "🇫🇷", "es": "🇪🇸", "it": "🇮🇹",
+    "ru": "🇷🇺", "ja": "🇯🇵", "ko": "🇰🇷", "zh": "🇨🇳", "pt": "🇵🇹",
+    "nl": "🇳🇱", "sv": "🇸🇪", "fi": "🇫🇮", "pl": "🇵🇱", "tr": "🇹🇷"
+}
+streamer_id = []
+
+def intercept_twitch_graphql(tag):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)  # Set to True for headless mode
         page = browser.new_page()
@@ -27,7 +36,39 @@ def intercept_twitch_graphql():
 
                             for stream_entry in streams_data:
                                 node = stream_entry.get("node", {})  # Twitch sometimes nests data in "node"
+                                title = node.get("title", "N/A")
+                                id = node.get("id","N/A")
+                                broadcaster = node.get("broadcaster", {}).get("displayName", "Unknown")
+                                broadcaster_id = node.get("broadcaster", {}).get("id", "Unknown")
+                                broadcaster_language = node.get("broadcaster", {}).get("broadcaster_language")
+                                viewers = node.get("viewersCount", 0)
+                                category = node.get("game", {}).get("name", "N/A")
+                                game_id = node.get("game_id")
+                                # Create the Discord Embed Message
+                                stream_url = f"https://twitch.tv/{broadcaster}"
+                                embed = {
+                                    "embeds": [
+                                        {
+                                            "title": title,
+                                            "url": stream_url,
+                                            "color": 0x9147FF,  # Twitch Purple
+                                            "fields": [
+                                                {"name": "Streamer", "value": broadcaster, "inline": True},
+                                                {"name": "Language", "value": f":flag_{broadcaster_language}:", "inline": True},
+                                                {"name": "Watch Now", "value": f"[Click Here]({stream_url})", "inline": False},
+                                                # {"name": "Tags", "value": ", ".join(node.get("tags")) if node.get("tags") else "No tags", "inline": False}
+                                            ],
+                                            "footer": {"text": "Twitch Stream Alert", "icon_url": "https://static-cdn.jtvnw.net/ttv-static-metadata/twitch_logo3.jpg"}
+                                        }
+                                    ]
+                                }
 
+                                # Send Webhook to Discord
+                                # response = requests.post(DISCORD_WEBHOOK, json=embed)
+                                # if response.status_code == 204:
+                                #     print("✅ Webhook sent successfully!")
+                                # else:
+                                #     print(f"❌ Error: {response.status_code} - {response.text}")
                                 # Example Node Structure
                                 # {'id': '316602781437',
                                 #  'title': 'Welcome to Impulse!',
@@ -64,15 +105,10 @@ def intercept_twitch_graphql():
                                 #  'previewThumbnailProperties': {'blurReason': 'BLUR_NOT_REQUIRED',
                                 #                                 '__typename': 'PreviewThumbnailProperties'},
                                 #  '__typename': 'Stream'}
-                                title = node.get("title", "N/A")
-                                id = node.get("id","N/A")
-                                broadcaster = node.get("broadcaster", {}).get("displayName", "Unknown")
-                                broadcaster_id = node.get("broadcaster", {}).get("id", "Unknown")
-                                viewers = node.get("viewersCount", 0)
-                                category = node.get("game", {}).get("name", "N/A")
 
-                                pp(node)
-                                streamers.append(broadcaster_id)
+                                if game_id and game_id == "509660":
+                                    pp(node)
+                                    streamers.append(broadcaster_id)
 
                 except json.JSONDecodeError:
                     print("Error decoding JSON response.")
@@ -81,11 +117,12 @@ def intercept_twitch_graphql():
         page.on("response", handle_response)
 
         # Open Twitch directory page
-        page.goto("https://www.twitch.tv/directory/all/tags/photography")
+        page.goto(f"https://www.twitch.tv/directory/all/tags/{tag}")
         page.wait_for_load_state("networkidle")  # Ensure all requests are completed
 
         browser.close()
         pp(streamers)
+        streamer_id.append(streamers)
         return streamers
 
 
@@ -112,7 +149,7 @@ def get_user_id(streamer_name, headers):
     else:
         return None
 
-def get_channel_tags(broadcaster_id, headers):
+def get_channel_info(broadcaster_id, headers):
     url = "https://api.twitch.tv/helix/channels"
     params = {"broadcaster_id": broadcaster_id}
     response = requests.get(url, headers=headers, params=params)
@@ -127,15 +164,16 @@ def main():
         "Authorization": f"Bearer {token}"
     }
 
-    # List of streamer names to query
-    streamer_ids = intercept_twitch_graphql()
+    for tag in tags:
+        intercept_twitch_graphql(tag)
 
-    for broadcaster_id in streamer_ids:
-        tags_data = get_channel_tags(broadcaster_id, headers)
+    for broadcaster_id in streamer_id:
+        channel_data = get_channel_info(broadcaster_id, headers)
         print(f"Streamer: {broadcaster_id}")
         # The API returns a JSON with a 'data' key containing a list of tag objects.
-        for tag in tags_data.get("data", []):
-            print(f"Tag ID: {tag.get('tags')}, Title: {tag.get('title')}")
+        for info in channel_data.get("data", []):
+            pp(info)
+            print(f"Tag ID: {info.get('tags')}, Title: {info.get('title')}")
         print("-" * 40)
 
 if __name__ == "__main__":
