@@ -12,18 +12,63 @@ CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK_URL")
 
 tags = ["photography","lightroom","photoshop"]
+categories = [
+    "509660", #art
+    "509658" #Just Chatting
+]
 LANGUAGE_FLAGS = {
     "en": "🇺🇸", "de": "🇩🇪", "fr": "🇫🇷", "es": "🇪🇸", "it": "🇮🇹",
     "ru": "🇷🇺", "ja": "🇯🇵", "ko": "🇰🇷", "zh": "🇨🇳", "pt": "🇵🇹",
     "nl": "🇳🇱", "sv": "🇸🇪", "fi": "🇫🇮", "pl": "🇵🇱", "tr": "🇹🇷"
 }
 streamer_id = []
+streamers = []
 
-def intercept_twitch_graphql(tag):
+def get_oauth_token(client_id, client_secret):
+    url = "https://id.twitch.tv/oauth2/token"
+    params = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "grant_type": "client_credentials"
+    }
+    response = requests.post(url, params=params)
+    response.raise_for_status()
+    data = response.json()
+    return data["access_token"]
+
+def get_user_id(streamer_name, headers):
+    url = "https://api.twitch.tv/helix/users"
+    params = {"login": streamer_name}
+    response = requests.get(url, headers=headers, params=params)
+    response.raise_for_status()
+    data = response.json()
+    if data.get("data"):
+        return data["data"][0]["id"]
+    else:
+        return None
+
+def get_game(game_id, headers):
+    url = "https://api.twitch.tv/helix/games"
+    params = {"id": game_id}
+    response = requests.get(url, headers=headers, params=params)
+    response.raise_for_status()
+    data = response.json()
+    if data.get("data"):
+        return data["data"][0]["name"]
+    else:
+        return None
+
+def get_channel_info(broadcaster_id, headers):
+    url = "https://api.twitch.tv/helix/channels"
+    params = {"broadcaster_id": broadcaster_id}
+    response = requests.get(url, headers=headers, params=params)
+    response.raise_for_status()
+    return response.json()
+
+def intercept_twitch_graphql(tag, headers):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)  # Set to True for headless mode
         page = browser.new_page()
-        streamers = []
         # Function to handle API responses
         def handle_response(response):
             if "https://gql.twitch.tv/gql" in response.url and response.request.method == "POST":
@@ -36,39 +81,21 @@ def intercept_twitch_graphql(tag):
 
                             for stream_entry in streams_data:
                                 node = stream_entry.get("node", {})  # Twitch sometimes nests data in "node"
-                                title = node.get("title", "N/A")
-                                id = node.get("id","N/A")
-                                broadcaster = node.get("broadcaster", {}).get("displayName", "Unknown")
                                 broadcaster_id = node.get("broadcaster", {}).get("id", "Unknown")
-                                broadcaster_language = node.get("broadcaster", {}).get("broadcaster_language")
-                                viewers = node.get("viewersCount", 0)
-                                category = node.get("game", {}).get("name", "N/A")
-                                game_id = node.get("game_id")
-                                # Create the Discord Embed Message
-                                stream_url = f"https://twitch.tv/{broadcaster}"
-                                embed = {
-                                    "embeds": [
-                                        {
-                                            "title": title,
-                                            "url": stream_url,
-                                            "color": 0x9147FF,  # Twitch Purple
-                                            "fields": [
-                                                {"name": "Streamer", "value": broadcaster, "inline": True},
-                                                {"name": "Language", "value": f":flag_{broadcaster_language}:", "inline": True},
-                                                {"name": "Watch Now", "value": f"[Click Here]({stream_url})", "inline": False},
-                                                # {"name": "Tags", "value": ", ".join(node.get("tags")) if node.get("tags") else "No tags", "inline": False}
-                                            ],
-                                            "footer": {"text": "Twitch Stream Alert", "icon_url": "https://static-cdn.jtvnw.net/ttv-static-metadata/twitch_logo3.jpg"}
-                                        }
-                                    ]
-                                }
-
-                                # Send Webhook to Discord
-                                # response = requests.post(DISCORD_WEBHOOK, json=embed)
-                                # if response.status_code == 204:
-                                #     print("✅ Webhook sent successfully!")
-                                # else:
-                                #     print(f"❌ Error: {response.status_code} - {response.text}")
+                                viewers = node.get("viewersCount","0")
+                                game_id = node.get("game", {}).get("id", "Unknown")
+                                if game_id and game_id in categories: ## Checks that the Game ID matches in the categories list
+                                    if broadcaster_id and broadcaster_id != "Unknown":
+                                        test = get_channel_info(broadcaster_id, headers)
+                                        channel_info = test["data"][0]
+                                        broadcaster_login = channel_info["broadcaster_login"]
+                                        broadcaster_name = channel_info["broadcaster_name"]
+                                        broadcaster_language = channel_info["broadcaster_language"]
+                                        game_name = channel_info["game_name"]
+                                        title = channel_info["title"]
+                                        channel_tags = ", ".join(channel_info['tags'])
+                                        pp(f"Streamer found! {broadcaster_name} (Language: {broadcaster_language}) is streaming with {viewers} viewer(s). They're streaming '{game_name}' ({game_id}): https://twitch.tv/{broadcaster_login}.\nTags: {channel_tags}.\nStream Title: {title}")
+                                        streamers.append(broadcaster_id)
                                 # Example Node Structure
                                 # {'id': '316602781437',
                                 #  'title': 'Welcome to Impulse!',
@@ -106,9 +133,6 @@ def intercept_twitch_graphql(tag):
                                 #                                 '__typename': 'PreviewThumbnailProperties'},
                                 #  '__typename': 'Stream'}
 
-                                if game_id and game_id == "509660":
-                                    pp(node)
-                                    streamers.append(broadcaster_id)
 
                 except json.JSONDecodeError:
                     print("Error decoding JSON response.")
@@ -121,42 +145,10 @@ def intercept_twitch_graphql(tag):
         page.wait_for_load_state("networkidle")  # Ensure all requests are completed
 
         browser.close()
-        pp(streamers)
-        streamer_id.append(streamers)
-        return streamers
 
-
-def get_oauth_token(client_id, client_secret):
-    url = "https://id.twitch.tv/oauth2/token"
-    params = {
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "grant_type": "client_credentials"
-    }
-    response = requests.post(url, params=params)
-    response.raise_for_status()
-    data = response.json()
-    return data["access_token"]
-
-def get_user_id(streamer_name, headers):
-    url = "https://api.twitch.tv/helix/users"
-    params = {"login": streamer_name}
-    response = requests.get(url, headers=headers, params=params)
-    response.raise_for_status()
-    data = response.json()
-    if data.get("data"):
-        return data["data"][0]["id"]
-    else:
-        return None
-
-def get_channel_info(broadcaster_id, headers):
-    url = "https://api.twitch.tv/helix/channels"
-    params = {"broadcaster_id": broadcaster_id}
-    response = requests.get(url, headers=headers, params=params)
-    response.raise_for_status()
-    return response.json()
 
 def main():
+
     # Step 1: Get the OAuth token
     token = get_oauth_token(CLIENT_ID, CLIENT_SECRET)
     headers = {
@@ -165,16 +157,8 @@ def main():
     }
 
     for tag in tags:
-        intercept_twitch_graphql(tag)
-
-    for broadcaster_id in streamer_id:
-        channel_data = get_channel_info(broadcaster_id, headers)
-        print(f"Streamer: {broadcaster_id}")
-        # The API returns a JSON with a 'data' key containing a list of tag objects.
-        for info in channel_data.get("data", []):
-            pp(info)
-            print(f"Tag ID: {info.get('tags')}, Title: {info.get('title')}")
-        print("-" * 40)
+        pp(f"Searching for streamers that are in the '{tag}' tag.")
+        intercept_twitch_graphql(tag, headers)
 
 if __name__ == "__main__":
     main()
