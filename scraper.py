@@ -83,7 +83,10 @@ def intercept_twitch_graphql(tag, headers):
                                 node = stream_entry.get("node", {})  # Twitch sometimes nests data in "node"
                                 broadcaster_id = node.get("broadcaster", {}).get("id", "Unknown")
                                 viewers = node.get("viewersCount","0")
-                                game_id = node.get("game", {}).get("id", "Unknown")
+                                if node.get("game"):
+                                    game_id = node.get("game", {}).get("id", "Unknown")
+                                else:
+                                    game_id = None
                                 if game_id and game_id in categories: ## Checks that the Game ID matches in the categories list
                                     if broadcaster_id and broadcaster_id != "Unknown":
                                         test = get_channel_info(broadcaster_id, headers)
@@ -132,8 +135,6 @@ def intercept_twitch_graphql(tag, headers):
                                 #  'previewThumbnailProperties': {'blurReason': 'BLUR_NOT_REQUIRED',
                                 #                                 '__typename': 'PreviewThumbnailProperties'},
                                 #  '__typename': 'Stream'}
-
-
                 except json.JSONDecodeError:
                     print("Error decoding JSON response.")
 
@@ -157,7 +158,7 @@ def main():
     }
 
     for tag in tags:
-        pp(f"Searching for streamers that are in the '{tag}' tag.")
+        pp(f"Searching for streamers that are in the '{tag}' tag. https://www.twitch.tv/directory/all/tags/{tag}")
         intercept_twitch_graphql(tag, headers)
 
 if __name__ == "__main__":
