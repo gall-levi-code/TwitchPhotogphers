@@ -21,8 +21,8 @@ LANGUAGE_FLAGS = {
     "ru": "🇷🇺", "ja": "🇯🇵", "ko": "🇰🇷", "zh": "🇨🇳", "pt": "🇵🇹",
     "nl": "🇳🇱", "sv": "🇸🇪", "fi": "🇫🇮", "pl": "🇵🇱", "tr": "🇹🇷"
 }
-streamer_id = []
-streamers = []
+
+streamers = {}
 
 def get_oauth_token(client_id, client_secret):
     url = "https://id.twitch.tv/oauth2/token"
@@ -78,27 +78,39 @@ def intercept_twitch_graphql(tag, headers):
                     for entry in json_data:
                         if isinstance(entry, dict) and "data" in entry:
                             streams_data = entry["data"].get("streams", {}).get("edges", [])  # Adjusting based on actual structure
-
+                            count = 0
                             for stream_entry in streams_data:
                                 node = stream_entry.get("node", {})  # Twitch sometimes nests data in "node"
-                                broadcaster_id = node.get("broadcaster", {}).get("id", "Unknown")
-                                viewers = node.get("viewersCount","0")
-                                if node.get("game"):
-                                    game_id = node.get("game", {}).get("id", "Unknown")
+                                assert node is not None ## Confirms there are results
+                                count += 1
+                                print(f"Result #{count}:")
+
+                                broadcaster_id = node.get("broadcaster").get("id")
+                                viewers = node.get("viewersCount") or 0
+                                broadcaster = get_channel_info(broadcaster_id, headers)
+                                channel_info = broadcaster["data"][0]
+                                broadcaster_login = channel_info["broadcaster_login"]
+                                broadcaster_name = channel_info["broadcaster_name"]
+                                broadcaster_language = channel_info["broadcaster_language"]
+                                game_name = channel_info["game_name"]
+                                game_id = channel_info["game_id"]
+                                title = channel_info["title"]
+                                channel_tags = " ".join(channel_info['tags'])
+                                if game_id in categories: ## Checks that the Game ID matches in the categories list
+                                    print(f"Streamer found! {broadcaster_name} (Language: {broadcaster_language}) is streaming with {viewers} viewer(s). They're streaming '{game_name}' ({game_id}): https://twitch.tv/{broadcaster_login}.\nTags: {channel_tags}.\nStream Title: {title}")
+                                    details = [
+                                        broadcaster_name,
+                                        broadcaster_language,
+                                        viewers,
+                                        game_name,
+                                        game_id,
+                                        title,
+                                        channel_tags,
+                                        f"https://twitch.tv/{broadcaster_login}"
+                                    ]
+                                    streamers[f"{broadcaster_id}"] = details
                                 else:
-                                    game_id = None
-                                if game_id and game_id in categories: ## Checks that the Game ID matches in the categories list
-                                    if broadcaster_id and broadcaster_id != "Unknown":
-                                        test = get_channel_info(broadcaster_id, headers)
-                                        channel_info = test["data"][0]
-                                        broadcaster_login = channel_info["broadcaster_login"]
-                                        broadcaster_name = channel_info["broadcaster_name"]
-                                        broadcaster_language = channel_info["broadcaster_language"]
-                                        game_name = channel_info["game_name"]
-                                        title = channel_info["title"]
-                                        channel_tags = ", ".join(channel_info['tags'])
-                                        pp(f"Streamer found! {broadcaster_name} (Language: {broadcaster_language}) is streaming with {viewers} viewer(s). They're streaming '{game_name}' ({game_id}): https://twitch.tv/{broadcaster_login}.\nTags: {channel_tags}.\nStream Title: {title}")
-                                        streamers.append(broadcaster_id)
+                                    print(f"Game game_id was not found. Game Name: {game_name or 'None'}, Game ID: {game_id or 'None'}")
                                 # Example Node Structure
                                 # {'id': '316602781437',
                                 #  'title': 'Welcome to Impulse!',
@@ -160,6 +172,7 @@ def main():
     for tag in tags:
         pp(f"Searching for streamers that are in the '{tag}' tag. https://www.twitch.tv/directory/all/tags/{tag}")
         intercept_twitch_graphql(tag, headers)
+    pp(streamers)
 
 if __name__ == "__main__":
     main()
