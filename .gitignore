@@ -3,4 +3,5 @@
 .env
 .log
 .db
+.iml
 __pycache__/
