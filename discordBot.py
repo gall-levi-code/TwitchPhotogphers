@@ -59,10 +59,10 @@ async def send_pending_approval_embed(channel, found):
     broadcaster_language = found.get("broadcaster_language", "Unknown")
     is_mature = found.get("is_mature", False)
     started_at = found.get("started_at", None)
+    stream_type = found.get("type", "unknown")
     thumbnail_url = found.get("thumbnail_url", "").replace("{width}", "1920").replace("{height}", "1080")
-
-    # Determine if live and how long
-    is_live = viewer_count > 0
+    # Determine if streamer is live
+    is_live = stream_type == "live"
     live_status = "🟢 **Live Now**" if is_live else "⚫ **Offline Now**"
     live_for = "N/A"
 
@@ -261,7 +261,7 @@ async def streamer(interaction: discord.Interaction, action: str, info: str):
                 is_mature = stream_data.get('is_mature')
                 stream_type = stream_data.get('type')
                 # Determine if streamer is live
-                is_live = viewer_count is not None and viewer_count > 0
+                is_live = stream_type == "live"
 
                 # Calculate time live
                 if is_live and started_at:
@@ -284,7 +284,7 @@ async def streamer(interaction: discord.Interaction, action: str, info: str):
         streamer_display = f"[{display_name}](https://twitch.tv/{login}){mature_flag}"
 
         # Set live/offline banner
-        live_status = "🟢 **Live Now**" if stream_type == "live" else "⚫ **Offline Now**"
+        live_status = "🟢 **Live Now**" if is_live else "⚫ **Offline Now**"
         live_message = f"{live_status} | **Live for:** `{live_for}`" if is_live else live_status
         if action.lower() == 'add':
             # Build the embed message
