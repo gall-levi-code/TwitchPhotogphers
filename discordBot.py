@@ -122,7 +122,7 @@ async def check_for_new_streamers():
     for guild in guilds:
         guild_id = guild.guild_id
         tags = guild.search_tags if guild else []
-
+        logging.info(tags)
         for iTag in tags:
             logging.info(f"🔎 Searching for streamers with tag: {iTag}")
 
@@ -580,6 +580,12 @@ async def search(interaction: discord.Interaction, search_tag: str):
 @app_commands.describe(
     action="Choose an action: add or remove",
 )
+@app_commands.choices(action=[
+    app_commands.Choice(name="Pending", value="pending"),
+    app_commands.Choice(name="Approved", value="approved"),
+    app_commands.Choice(name="Rejected", value="rejected"),
+    app_commands.Choice(name="List", value="list")
+])
 async def status(interaction: discord.Interaction, action: str):
     streamers = db_manager.get_all(Streamer,guild_id=interaction.guild_id)
     available_actions = ["pending", "approved", "rejected"]
@@ -588,7 +594,7 @@ async def status(interaction: discord.Interaction, action: str):
     rejected_count = 0
     streamer_count = 0
     display_names = ""
-    if action.lower() not in available_actions:
+    if action.lower() == "list":
         for iStreamer in streamers:
             if iStreamer.status == "pending":
                 pending_count += 1
@@ -602,49 +608,112 @@ async def status(interaction: discord.Interaction, action: str):
             if iStreamer.status == action.lower():
                 streamer_count += 1
                 display_names += f"https://twitch.tv/{iStreamer.broadcaster_name}" + "\n"
-        await interaction.response.send_message(f"Here's our list of {action.lower()} streamers(Total: {streamer_count}):```\n{display_names}```")
+        if len(display_names) > 2000:
+            await interaction.response.send_message(f"**{action.lower()}** streamers: {streamer_count}")
+        else:
+            await interaction.response.send_message(f"Here's our list of {action.lower()} streamers(Total: {streamer_count}):```\n{display_names}```")
 
 
-@client.tree.command(name="tag", description="Manage tracked search tags", guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(action="add, remove, or list tags", tag="The tag to add/remove (if applicable)")
-async def tag(interaction: discord.Interaction, action: str, tag: str or None):
-    guild_id = str(interaction.guild_id)
-    search_entry = db_manager.get_one(SearchTags,guild_id=guild_id)
-    completed = ""
-    action = action.lower()
-    if action not in ["add", "remove", "list"]:
-        if action == "list":
-            tags = search_entry.search_tags if search_entry else []
-            await interaction.response.send_message(f"📌 **Tracked Tags:** {', '.join(tags) if tags else 'None'}")
-            return
+class TagGroup(app_commands.Group):
+    """Manages tracked search tags with subcommands"""
 
-        if not tag:
-            await interaction.response.send_message("⚠️ Please provide a tag.", ephemeral=True)
-            return
-        if action == "add":
-            if not search_entry:
-                search_entry = SearchTags(guild_id=guild_id, search_tags=[tag])
-                db_manager.add(search_entry)
-            else:
-                if len(search_entry.search_tags) >= 5:
-                    await interaction.response.send_message(
-                        "⚠️ You can only track **5 tags max**. Use /tag list to review your current tags. You may also remove tags with /tag remove *tag*.",
-                        ephemeral=True)
-                    return
-                if tag in search_entry.search_tags:
-                    await interaction.response.send_message(f"⚠️ The tag '{tag}' is already being tracked.", ephemeral=True)
-                    return
-                search_entry.search_tags.append(tag)
-                completed = "added"
+    @app_commands.command(name="add", description="Add a tag to track")
+    async def add(self, interaction: discord.Interaction, tag: str):
+        """Adds a tag to the list of tracked tags"""
+        guild_id = str(interaction.guild_id)
+        tags_list = db_manager.get_one(SearchTags, guild_id=guild_id)
 
-        elif action == "remove":
-            if search_entry and tag in search_entry.search_tags:
-                search_entry.search_tags.remove(tag)
-                completed = "removed"
+        if not tags_list:
+            tags_list = SearchTags(guild_id=guild_id, search_tags=[tag])
+            db_manager.add_entry(tags_list)
+        else:
+            if len(tags_list.search_tags) >= 5:
+                await interaction.response.send_message(
+                    "⚠️ You can only track **5 tags max**. Use `/tag list` to review your current tags. Remove tags with `/tag remove <tag>`.",
+                    ephemeral=True)
+                return
+            if tag in tags_list.search_tags:
+                await interaction.response.send_message(f"⚠️ The tag '{tag}' is already being tracked.",
+                                                        ephemeral=True)
+                return
+
+        updated_tags = tags_list.search_tags + [tag]
+        tags_list.search_tags = updated_tags
+        db_manager.add_entry(tags_list)
+        await interaction.response.send_message(f"✅ `{tag}` has been **added**.")
+
+
+    @app_commands.command(name="remove", description="Remove a tracked tag")
+    async def remove(self, interaction: discord.Interaction, tag: str):
+        """Removes a tag from the tracked list"""
+        guild_id = str(interaction.guild_id)
+        tags_list = db_manager.get_one(SearchTags, guild_id=guild_id)
+
+        if tags_list and tag in tags_list.search_tags:
+            updated_tags = [t for t in tags_list.search_tags if t != tag]
+            tags_list.search_tags = updated_tags
+            db_manager.add_entry(tags_list)
+            await interaction.response.send_message(f"✅ `{tag}` has been **removed**.")
         else:
             await interaction.response.send_message(f"⚠️ The tag '{tag}' isn't being tracked.", ephemeral=True)
             return
-    await interaction.response.send_message(f"✅ `{tag}` has been **{completed}**.")
+
+    @app_commands.command(name="list", description="List all tracked tags")
+    async def list(self, interaction: discord.Interaction):
+        """Displays all tracked tags"""
+        guild_id = str(interaction.guild_id)
+        tags_list = db_manager.get_one(SearchTags, guild_id=guild_id)
+        tags = tags_list.search_tags if tags_list else []
+
+        await interaction.response.send_message(f"📌 **Tracked Tags:** {', '.join(tags) if tags else 'None'}")
+
+
+# ✅ Register the command group
+client.tree.add_command(TagGroup(name="tag"),guild=discord.Object(id=GUILD_ID))
+
+# @client.tree.command(name="tag", description="Manage tracked search tags", guild=discord.Object(id=GUILD_ID))
+# @app_commands.describe(action="add, remove, or list tags", tag="The tag to add/remove (if applicable)")
+# async def tag(interaction: discord.Interaction, action: str, tag: str or None):
+#     guild_id = str(interaction.guild_id)
+#     tags_list = db_manager.get_one(SearchTags,guild_id=guild_id)
+#     print(tags_list)
+#     print(tag)
+#     action = action.lower()
+#     if action == "list":
+#         tags = tags_list.search_tags if tags_list else []
+#         await interaction.response.send_message(f"📌 **Tracked Tags:** {', '.join(tags) if tags else 'None'}")
+#         return
+#
+#     if not tag:
+#         await interaction.response.send_message("⚠️ Please provide a tag.", ephemeral=True)
+#         return
+#
+#     completed = ""
+#     if action == "add":
+#         if not tags_list:
+#             tags_list = SearchTags(guild_id=guild_id, search_tags=[tag])
+#         else:
+#             if len(tags_list.search_tags) >= 5:
+#                 await interaction.response.send_message(
+#                     "⚠️ You can only track **5 tags max**. Use /tag list to review your current tags. You may also remove tags with /tag remove *tag*.",
+#                     ephemeral=True)
+#                 return
+#             if tag in tags_list.search_tags:
+#                 await interaction.response.send_message(f"⚠️ The tag '{tag}' is already being tracked.", ephemeral=True)
+#                 return
+#             tags_list.search_tags.append(tag)
+#             print(tags_list.search_tags)
+#             completed = "added"
+#         db_manager.add_entry(tags_list)
+#     elif action == "remove":
+#         if tags_list and tag in tags_list.search_tags:
+#             tags_list.search_tags.remove(tag)
+#             completed = "removed"
+#             db_manager.add_entry(tags_list)
+#     else:
+#         await interaction.response.send_message(f"⚠️ The tag '{tag}' isn't being tracked.", ephemeral=True)
+#         return
+#     await interaction.response.send_message(f"✅ `{tag}` has been **{completed}**.")
 
 
 @client.event

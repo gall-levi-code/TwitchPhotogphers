@@ -4,12 +4,14 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from datetime import datetime, timezone
 
 # ✅ Configure logging
-logging.basicConfig(
-    filename="database.log",
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# logging.basicConfig(
+#     filename="database.log",
+#     level=logging.INFO,
+#     format="%(asctime)s - %(levelname)s - %(message)s",
+#     datefmt="%Y-%m-%d %H:%M:%S",
+# )
+
+logging.basicConfig(level=logging.INFO)
 
 DATABASE_URL = "sqlite:///twitch_streamers.db"
 engine = create_engine(DATABASE_URL, pool_size=20, max_overflow=30, echo=False)
