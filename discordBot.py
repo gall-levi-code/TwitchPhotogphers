@@ -7,7 +7,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 from database import db_manager, Streamer, ServerSettings, SearchTags
-from twitchFuncs import twitch_search_by_tag, get_streamer_info, get_channel_info, get_stream_info
+from twitchFuncs import TwitchStreamer, search_live_channel_by_tag, search_channels_by_term, get_streamer_info, get_channel_info, get_stream_info
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -15,26 +15,27 @@ GUILD_ID = os.getenv("DISCORD_GUILD_ID")
 
 logging.basicConfig(level=logging.INFO)
 
+def get_channel_settings(guild_id):
+    server_settings = db_manager.get_one(ServerSettings, guild_id=guild_id)
+    if not server_settings:
+        return None
+    else:
+        return server_settings
+
+
 class Client(commands.Bot):
     async def on_ready(self):
-        print(f"Logged in as {self.user} (ID: {self.user.id})")
         logging.info(f"Logged in as {self.user} (ID: {self.user.id})")
-        guild = discord.Object(id=GUILD_ID)
-        synced = await self.tree.sync(guild=guild)
-        logging.info(f"Synced {len(synced)} command(s)")
-        print(f"Synced {len(synced)} command(s)")
         try:
             guild = discord.Object(id=GUILD_ID)
             synced = await self.tree.sync(guild=guild)
             logging.info(f"Synced {len(synced)} command(s)")
-            print(f"Synced {len(synced)} command(s)")
         except Exception as e:
             logging.info(f"Error syncing commands: {e}")
         check_for_new_streamers.start()
     async def on_message(self, message):
         if message.author == self.user:
             return
-
         if message.content.startswith("!test"):
             await message.channel.send(f"test command from {message.author}")
 
@@ -43,64 +44,34 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = Client(command_prefix="!", intents=intents)
 
-async def send_pending_approval_embed(channel, found):
+async def send_pending_approval_embed(channel, InputStreamer):
     """Sends a detailed embed message for streamer approval."""
-
-    broadcaster_name = found.get("broadcaster_name")
-    broadcaster_login = found.get("broadcaster_login")
-    broadcaster_id = found.get("broadcaster_id")
-    profile_image_url = found.get("profile_image_url")
-
-    game_name = found.get("game_name", "Unknown")
-    game_id = found.get("game_id", "N/A")
-    title = found.get("title", "No title available")
-    tags = found.get("tags", [])
-    viewer_count = found.get("viewers", 0)
-    broadcaster_language = found.get("broadcaster_language", "Unknown")
-    is_mature = found.get("is_mature", False)
-    started_at = found.get("started_at", None)
-    stream_type = found.get("type", "unknown")
-    thumbnail_url = found.get("thumbnail_url", "").replace("{width}", "1920").replace("{height}", "1080")
-    # Determine if streamer is live
-    is_live = stream_type == "live"
-    live_status = "🟢 **Live Now**" if is_live else "⚫ **Offline Now**"
-    live_for = "N/A"
-
-    if is_live and started_at:
-        start_time = datetime.strptime(started_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        now_time = datetime.now(timezone.utc)
-        time_diff = now_time - start_time
-        hours, remainder = divmod(time_diff.seconds, 3600)
-        minutes, _ = divmod(remainder, 60)
-        live_for = f"{hours}h {minutes}m" if hours else f"{minutes}m"
-
-    # Add 🔞 emoji if mature
-    mature_flag = " 🔞" if is_mature else ""
-    streamer_display = f"[{broadcaster_name}](https://twitch.tv/{broadcaster_login}){mature_flag}"
-
+    i = InputStreamer
     # Build Embed
     embed = discord.Embed(
-        title=f"📌 Pending Streamer Approval: {broadcaster_name}",
-        description=f"**{title}**",
+        title=f"📌 Pending Streamer Approval: {i.broadcaster_name}",
+        description=f"**{i.title}**",
         color=discord.Color.orange()
     )
-    embed.set_thumbnail(url=profile_image_url)
+    embed.set_thumbnail(url=i.profile_image_url)
 
-    embed.add_field(name="Streamer", value=streamer_display, inline=True)
-    embed.add_field(name="Viewers", value=f"`{viewer_count}`", inline=True)
-    embed.add_field(name="Language", value=f"`{broadcaster_language.upper()}`", inline=True)
+    embed.add_field(name="Streamer", value=i.streamer_display, inline=True)
+    embed.add_field(name="Viewers", value=f"`{i.viewers}`", inline=True)
+    language = i.broadcaster_language or "N/A"
+    type(language)
+    embed.add_field(name="Language", value=f"`{language.upper()}`", inline=True)
 
-    embed.add_field(name="Game", value=f"{game_name} (`{game_id}`)", inline=True)
-    embed.add_field(name="Live Status", value=f"{live_status} | **Live for:** `{live_for}`", inline=True)
+    embed.add_field(name="Game", value=f"{i.game_name} (`{i.game_id}`)", inline=True)
+    embed.add_field(name="Live Status", value=f"{i.live_status} | **Live for:** `{i.live_for}`", inline=True)
 
-    if tags:
-        embed.add_field(name="Tags", value=", ".join(tags), inline=False)
+    if i.channel_tags:
+        embed.add_field(name="Tags", value=", ".join(i.channel_tags), inline=False)
 
     embed.set_footer(text="React to approve or reject this streamer")
 
     # Set stream thumbnail if live
-    if is_live and thumbnail_url:
-        embed.set_image(url=thumbnail_url)
+    if i.is_live and i.thumbnail_url:
+        embed.set_image(url=i.get_thumbnail_url(width=1920, height=1080))
 
     # Send Message & Add Reactions
     message = await channel.send(embed=embed)
@@ -126,7 +97,7 @@ async def check_for_new_streamers():
         for iTag in tags:
             logging.info(f"🔎 Searching for streamers with tag: {iTag}")
 
-            new_streamers, total_streamers = await twitch_search_by_tag(iTag)
+            new_streamers, total_streamers = await search_live_channel_by_tag(iTag)
 
             if total_streamers > 0:
                 approval_channel = db_manager.get_one(ServerSettings, guild_id=guild_id)
@@ -138,20 +109,26 @@ async def check_for_new_streamers():
                         continue
 
                     for found in new_streamers:
-                        found = found.get("data")
-                        existing_streamer = db_manager.get_one(Streamer, guild_id=guild_id, broadcaster_id=found.get("broadcaster_id"))
+                        broadcaster_login = found.get('broadcaster_login')
+                        info = TwitchStreamer(broadcaster_login=broadcaster_login)
+                        existing_streamer = db_manager.get_one(Streamer, guild_id=guild_id, broadcaster_id=info.broadcaster_id)
 
                         if not existing_streamer:
-                            message = await send_pending_approval_embed(channel, found)
-
+                            message = await send_pending_approval_embed(channel, InputStreamer=info)
                             new_pending = Streamer(
                                 guild_id=guild_id,
-                                broadcaster_id=found.get("broadcaster_id"),
-                                broadcaster_name=found.get("broadcaster_name"),
-                                stream_url=f"https://twitch.tv/{found.get('broadcaster_login')}",
+                                broadcaster_id=info.broadcaster_id,
+                                broadcaster_name=info.broadcaster_name,
+                                stream_url=info.url,
                                 status="pending",
                                 message_id=str(message.id),
                                 updated_at=datetime.now(timezone.utc),
+                                broadcaster_language = info.broadcaster_language,
+                                viewers = info.viewers,
+                                game_name = info.game_name,
+                                game_id = info.game_id,
+                                title = info.title,
+                                tags = info.channel_tags,
                             )
                             db_manager.add_entry(new_pending)
 
@@ -223,6 +200,7 @@ async def streamer(interaction: discord.Interaction, action: str, info: str):
     if info.startswith("https://twitch.tv/") or info.startswith("https://www.twitch.tv/"):
         info = info.split("/")[-1]
     available_actions = ["add", "remove", "pending"]
+
     streamer_info = get_streamer_info(info)
     streamer_data = streamer_info.get('data')
     logging.info(streamer_data)
@@ -260,6 +238,7 @@ async def streamer(interaction: discord.Interaction, action: str, info: str):
                 language = stream_data.get('language')
                 is_mature = stream_data.get('is_mature')
                 stream_type = stream_data.get('type')
+                print(stream_type)
                 # Determine if streamer is live
                 is_live = stream_type == "live"
 
@@ -356,7 +335,7 @@ async def streamer(interaction: discord.Interaction, action: str, info: str):
                     status="approved",
                     updated_at=datetime.now(timezone.utc),
                 )
-                db_manager.add(streamer_entry)
+                db_manager.add_entry(streamer_entry)
             await interaction.response.send_message(f"Added {streamer_display} to the list of approved streamers.")
         elif action.lower() == 'remove':
             embed = discord.Embed(
@@ -407,7 +386,7 @@ async def streamer(interaction: discord.Interaction, action: str, info: str):
                 streamer_db.status = "rejected"
                 streamer_db.updated_at = datetime.now(timezone.utc)
                 streamer_db.message_id = message.id
-                db_manager.add(streamer_db)
+                db_manager.add_entry(streamer_db)
             else:
                 logging.info(f"Streamer {broadcaster_id} not found in database. Creating a new entry...")
                 streamer_entry = Streamer(
@@ -425,7 +404,7 @@ async def streamer(interaction: discord.Interaction, action: str, info: str):
                     status="rejected",
                     updated_at=datetime.now(timezone.utc),
                 )
-                db_manager.add(streamer_entry)
+                db_manager.add_entry(streamer_entry)
             await interaction.response.send_message(f"Setting {streamer_display} to rejected streamers.")
         elif action.lower() == 'pending':
             embed = discord.Embed(
@@ -476,7 +455,7 @@ async def streamer(interaction: discord.Interaction, action: str, info: str):
                 streamer_db.status = "pending"
                 streamer_db.updated_at = datetime.now(timezone.utc)
                 streamer_db.message_id = message.id
-                db_manager.add(streamer_db)
+                db_manager.add_entry(streamer_db)
             else:
                 logging.info(f"Streamer {broadcaster_id} not found in database. Creating a new entry...")
                 streamer_entry = Streamer(
@@ -494,7 +473,7 @@ async def streamer(interaction: discord.Interaction, action: str, info: str):
                     status="pending",
                     updated_at=datetime.now(timezone.utc),
                 )
-                db_manager.add(streamer_entry)
+                db_manager.add_entry(streamer_entry)
             await interaction.response.send_message(f"Setting {streamer_display} to rejected streamers.")
         else:
             await interaction.response.send_message("Nope")
@@ -502,6 +481,7 @@ async def streamer(interaction: discord.Interaction, action: str, info: str):
         await interaction.response.send_message(
             f"Sorry we can't {action} your input '{info}'. It did not produce the proper response. Please try again.\n{streamer_info['data']}",
             ephemeral=True)
+        # get_streamer_info results
         # {
         #     'id': '735927359',
         #     'login': 'shotsbyajc',
@@ -514,6 +494,7 @@ async def streamer(interaction: discord.Interaction, action: str, info: str):
         #     'view_count': 0,
         #     'created_at': '2021-10-20T22:29:11Z'
         # }
+        # get_channel_info results
         # {
         #     'broadcaster_id': '735927359',
         #     'broadcaster_login': 'shotsbyajc',
@@ -527,6 +508,7 @@ async def streamer(interaction: discord.Interaction, action: str, info: str):
         #     'content_classification_labels': [],
         #     'is_branded_content': False
         # }
+        # get_stream_info results
         # {
         #     'id': '316506378489',
         #     'user_id': '735927359',
@@ -602,7 +584,7 @@ async def status(interaction: discord.Interaction, action: str):
                 approved_count += 1
             elif iStreamer.status == "rejected":
                 rejected_count += 1
-        await interaction.response.send_message(f"Our current counts are:\nPending: {pending_count}\nApproved: {approved_count}\nRejected: {rejected_count}")
+        await interaction.response.send_message(f"Our current counts are:\nPending: {pending_count}\nApproved: {approved_count}\nRejected: {rejected_count}\nTotal: {pending_count+approved_count+rejected_count}")
     elif action.lower() in available_actions:
         for iStreamer in streamers:
             if iStreamer.status == action.lower():
@@ -667,54 +649,7 @@ class TagGroup(app_commands.Group):
 
         await interaction.response.send_message(f"📌 **Tracked Tags:** {', '.join(tags) if tags else 'None'}")
 
-
-# ✅ Register the command group
 client.tree.add_command(TagGroup(name="tag"),guild=discord.Object(id=GUILD_ID))
-
-# @client.tree.command(name="tag", description="Manage tracked search tags", guild=discord.Object(id=GUILD_ID))
-# @app_commands.describe(action="add, remove, or list tags", tag="The tag to add/remove (if applicable)")
-# async def tag(interaction: discord.Interaction, action: str, tag: str or None):
-#     guild_id = str(interaction.guild_id)
-#     tags_list = db_manager.get_one(SearchTags,guild_id=guild_id)
-#     print(tags_list)
-#     print(tag)
-#     action = action.lower()
-#     if action == "list":
-#         tags = tags_list.search_tags if tags_list else []
-#         await interaction.response.send_message(f"📌 **Tracked Tags:** {', '.join(tags) if tags else 'None'}")
-#         return
-#
-#     if not tag:
-#         await interaction.response.send_message("⚠️ Please provide a tag.", ephemeral=True)
-#         return
-#
-#     completed = ""
-#     if action == "add":
-#         if not tags_list:
-#             tags_list = SearchTags(guild_id=guild_id, search_tags=[tag])
-#         else:
-#             if len(tags_list.search_tags) >= 5:
-#                 await interaction.response.send_message(
-#                     "⚠️ You can only track **5 tags max**. Use /tag list to review your current tags. You may also remove tags with /tag remove *tag*.",
-#                     ephemeral=True)
-#                 return
-#             if tag in tags_list.search_tags:
-#                 await interaction.response.send_message(f"⚠️ The tag '{tag}' is already being tracked.", ephemeral=True)
-#                 return
-#             tags_list.search_tags.append(tag)
-#             print(tags_list.search_tags)
-#             completed = "added"
-#         db_manager.add_entry(tags_list)
-#     elif action == "remove":
-#         if tags_list and tag in tags_list.search_tags:
-#             tags_list.search_tags.remove(tag)
-#             completed = "removed"
-#             db_manager.add_entry(tags_list)
-#     else:
-#         await interaction.response.send_message(f"⚠️ The tag '{tag}' isn't being tracked.", ephemeral=True)
-#         return
-#     await interaction.response.send_message(f"✅ `{tag}` has been **{completed}**.")
-
 
 @client.event
 async def on_raw_reaction_add(payload):
