@@ -1,5 +1,7 @@
 import os, logging, requests, time
 from datetime import datetime, timezone
+
+import discord
 from playwright.async_api import async_playwright
 
 # Logging
@@ -32,9 +34,6 @@ TWITCH_HEADERS = {
     "Client-ID": TWITCH_CLIENT_ID,
     "Authorization": f"Bearer {TWITCH_TOKEN}"
 }
-
-
-
 
 # ✅ Fetch Info from Twitch API
 def get_streamer_info(broadcaster_login):
@@ -87,6 +86,43 @@ def get_stream_info(broadcaster_login):
     except requests.exceptions.RequestException as e:
         return {"success": False, "data": str(e)}
 
+
+def get_multiple_streams(user_ids=None, user_logins=None):
+    """
+    Fetch information for multiple streams at once.
+
+    Args:
+        user_ids (list): List of user IDs (max 100)
+        user_logins (list): List of user login names (max 100)
+
+    Returns:
+        dict: Response with success flag and data
+    """
+    logging.info(
+        f"Fetching multiple streams (ids: {len(user_ids) if user_ids else 0}, logins: {len(user_logins) if user_logins else 0})...")
+
+    url = "https://api.twitch.tv/helix/streams"
+    params = []
+
+    # Add user_ids to params
+    if user_ids:
+        for user_id in user_ids[:100]:  # Max 100 per request
+            params.append(("user_id", user_id))
+
+    # Add user_logins to params
+    if user_logins:
+        for login in user_logins[:100]:  # Max 100 per request
+            params.append(("user_login", login))
+
+    try:
+        response = requests.get(url, headers=TWITCH_HEADERS, params=params)
+        response.raise_for_status()
+        data = response.json()
+        return {"success": True, "data": data["data"] if "data" in data else []}
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error fetching multiple streams: {e}")
+        return {"success": False, "data": str(e)}
+
 def search_channels_by_term(search_term):
     logging.info(f"🔎 Searching live channels for '{search_term}'...")
     search_term = search_term.replace(" ","%20")
@@ -101,7 +137,7 @@ def search_channels_by_term(search_term):
         response.raise_for_status()
         data = response.json()
         if "data" in data and data["data"]:
-            return {"success": True, "data": data["data"][0]}
+            return {"success": True, "data": data["data"]}
         else:
             return {"success": False, "data": "No live stream data found"}
     except requests.exceptions.RequestException as e:
@@ -123,7 +159,6 @@ async def search_live_channel_by_tag(tag):
             if "https://gql.twitch.tv/gql" in response.url and response.request.method == "POST":
                 try:
                     json_data = await response.json()
-                    # print(json_data)
                     for entry in json_data:
                         if isinstance(entry, dict) and "data" in entry:
                             streams_data = entry["data"].get("streams", {}).get("edges", [])
@@ -151,7 +186,7 @@ class TwitchStreamer():
         # Define user details
         self.broadcaster_id = None
         self.broadcaster_language = None
-        self.broadcaster_login = broadcaster_login
+        self.broadcaster_login = broadcaster_login #all lowercase version of broadcaster_name
         self.broadcaster_name = None
         self.broadcaster_type = None
         self.channel_tags = None
@@ -177,12 +212,11 @@ class TwitchStreamer():
         self.viewers = None
         self.streamer_display = None
         # Update user details
+        self.update()
 
     def get_streamer_info(self):
         streamer_info = get_streamer_info(self.broadcaster_login)
         if streamer_info["success"]:
-            print("Results from get_streamer_info:")
-            print(streamer_info["data"])
             self.broadcaster_id = streamer_info["data"]["id"]
             self.broadcaster_name = streamer_info["data"]["display_name"]
             self.broadcaster_type = streamer_info["data"]["broadcaster_type"]
@@ -191,7 +225,6 @@ class TwitchStreamer():
             self.offline_image_url = streamer_info["data"]["offline_image_url"]
             self.profile_image_url = streamer_info["data"]["profile_image_url"] or "https://static.twitchcdn.net/assets/default-profile.png"
             self.viewers = streamer_info["data"]["view_count"] or 0
-            print(self.__dict__)
             return True
         else:
             return False
@@ -213,14 +246,11 @@ class TwitchStreamer():
         # }
         channel_info = get_channel_info(self.broadcaster_id)
         if channel_info["success"]:
-            print("Results from get_channel_info:")
-            print(channel_info['data'])
             self.broadcaster_language = channel_info['data']["broadcaster_language"]
             self.game_id = channel_info['data']["game_id"]
             self.game_name = channel_info['data']["game_name"]
             self.title = channel_info['data']["title"]
             self.channel_tags = channel_info['data']["tags"]
-            print(self.__dict__)
             return True
         else:
             return False
@@ -245,9 +275,7 @@ class TwitchStreamer():
         #     'is_mature': False
         # }
         stream_info = get_stream_info(self.broadcaster_login)
-        if stream_info["success"]:
-            print("Results from get_stream_info:")
-            print(stream_info['data'])
+        if stream_info["success"] and stream_info["data"]:
             self.type = stream_info["data"]["type"]
             self.is_live = True if self.type == "live" else False
             self.started_at = stream_info["data"]["started_at"]
@@ -259,19 +287,23 @@ class TwitchStreamer():
                 # Convert to hours and minutes
                 hours, remainder = divmod(time_diff.seconds, 3600)
                 minutes, _ = divmod(remainder, 60)
-                self.live_for = f"{hours}h {minutes}m" if hours else f"{minutes}m"
+                self.live_for = f"{hours}:{minutes:02d}" if hours else f"{minutes} mins"
             self.mature_flag = " 🔞" if self.is_mature else ""
-            self.live_status = "🟢 **Live Now**" if self.is_live else "⚫ **Offline Now**"
             self.streamer_display = f"[{self.broadcaster_name}](https://twitch.tv/{self.broadcaster_login}){self.mature_flag}"
-            self.live_message = f"{self.live_status} | **Live for:** `{self.live_for}`" if self.is_live else self.live_status
             self.viewers = stream_info["data"]["viewer_count"]
             self.thumbnail_url = stream_info["data"]["thumbnail_url"]
-            self.title = stream_info["data"]["title"]
-            print(self.__dict__)
-            return True
         else:
-            print(stream_info["data"])
-            return False
+            self.type = "offline"
+            self.is_live = False
+            self.started_at = None
+            self.is_mature = False
+            self.live_for = ""
+            self.mature_flag = ""
+            self.viewers = 0
+        self.live_status = "🟢 **Live Now**" if self.is_live else "⚫ **Offline Now**"
+        self.live_message = f"{self.live_status} | **Live for:** `{self.live_for}`" if self.is_live else self.live_status
+        self.streamer_display = f"[{self.broadcaster_name}](https://twitch.tv/{self.broadcaster_login}){self.mature_flag}"
+        return True
 
     def get_thumbnail_url(self, width=1920, height=1080):
         if self.thumbnail_url:
@@ -281,79 +313,14 @@ class TwitchStreamer():
 
     def update(self):
         self.get_streamer_info()
-        print("sleeping for 1 second")
-        time.sleep(1)
         self.get_channel_info()
-        print("sleeping for 1 second")
-        time.sleep(1)
         self.get_stream_info()
-        print("sleeping for 1 second")
-        time.sleep(1)
-
-# return streamers, total_streamers_found
-#
-#
-# def twitch_search_by_tag(tag):
-#     logging.info(f"🔎 Searching for streamers under '{tag}' tag...")
-#     total_streamers_found = 0
-#     streamers = []
-#     with async_playwright() as p:
-#         browser = p.chromium.launch(headless=True)
-#         page = browser.new_page()
-#
-#         def handle_response(response):
-#             nonlocal total_streamers_found
-#             if "https://gql.twitch.tv/gql" in response.url and response.request.method == "POST":
-#                 try:
-#                     json_data = response.json()
-#                     for entry in json_data:
-#                         if isinstance(entry, dict) and "data" in entry:
-#                             streams_data = entry["data"].get("streams", {}).get("edges", [])
-#                             for stream_entry in streams_data:
-#                                 node = stream_entry.get("node", {})
-#                                 assert node is not None
-#
-#                                 broadcaster_id = node.get("broadcaster").get("id")
-#                                 streamers.append(broadcaster_id)
-#                                 # viewers = node.get("viewersCount") or 0
-#                                 # channel_info = get_channel_info(broadcaster_id)
-#                                 #
-#                                 # broadcaster_login = channel_info["broadcaster_login"]
-#                                 # broadcaster_name = channel_info["broadcaster_name"]
-#                                 # broadcaster_language = channel_info["broadcaster_language"]
-#                                 # game_name = channel_info["game_name"]
-#                                 # game_id = channel_info["game_id"]
-#                                 # title = channel_info["title"]
-#                                 # channel_tags = " ".join(channel_info['tags'])
-#                                 #
-#                                 # if game_id in CATEGORIES:
-#                                 #     total_streamers_found += 1
-#                                 #     logging.info(f"🎥 Found Streamer {broadcaster_name} ({broadcaster_language}) with {viewers} viewers.")
-#                                 #     details = [
-#                                 #         broadcaster_name,
-#                                 #         broadcaster_language,
-#                                 #         viewers,
-#                                 #         game_name,
-#                                 #         game_id,
-#                                 #         title,
-#                                 #         channel_tags,
-#                                 #         f"https://twitch.tv/{broadcaster_login}"
-#                                 #     ]
-#                 except json.JSONDecodeError:
-#                     logging.error("Error decoding JSON response.")
-#
-#         page.on("response", handle_response)
-#         page.goto(f"https://www.twitch.tv/directory/all/tags/{tag}")
-#         page.wait_for_load_state("networkidle")
-#         browser.close()
-#         return streamers, total_streamers_found
-
 
 def main():
-    test = TwitchStreamer("atlasvisuals")
-    test.update()
-    print(test.__dict__)
+    broadcaster = "syronius"
+    results = TwitchStreamer(broadcaster)
 
+    print(results.__dict__)
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
