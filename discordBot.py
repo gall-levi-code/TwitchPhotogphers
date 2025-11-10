@@ -636,7 +636,7 @@ client.tree.add_command(TagGroup(name="tag"),guild=discord.Object(id=GUILD_ID))
 @tasks.loop(minutes=10)
 async def check_for_new_streamers():
     """Runs every 10 minutes to search for streamers and add them to pending."""
-    logging.info("🔎 Checking for new streamers...")
+    logging.info(f"🔎 Checking for new streamers...{datetime.now()}")
 
     guilds = db_manager.get_all(SearchTags)
     logging.info(f"🔎 Found {len(guilds)} guilds to check.")
@@ -660,6 +660,7 @@ async def check_for_new_streamers():
                         continue
 
                     for found in new_streamers:
+                        print(found['data'])
                         broadcaster_login = found['data']['broadcaster_login']
                         await add_pending_approval(channel,guild_id,broadcaster_login)
         logging.info("*** SEARCH COMPLETED ***")
